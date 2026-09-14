@@ -11,21 +11,50 @@
   const stage = document.getElementById('stage');
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
-  let S = 1; // screen px per map unit
+  const mapImg = document.getElementById('map');
+  const mapW = D.x1 - D.x0, mapH = D.y1 - D.y0;
+  let S = 1, s = 1;           // canvas px / css px per map unit
+  let viewW = mapW, viewH = mapH; // visible map units
+  let mobile = false;
+  const cam = { x: 0, y: 0 };  // top-left of the view in map units
   function layout() {
-    const mapW = D.x1 - D.x0, mapH = D.y1 - D.y0;
-    const availW = Math.min(window.innerWidth - 16, 1100);
-    const availH = window.innerHeight - 130;
-    const s = Math.max(0.3, Math.min(availW / mapW, availH / mapH));
-    stage.style.setProperty('--w', (mapW * s) + 'px');
-    stage.style.setProperty('--h', (mapH * s) + 'px');
+    const header = document.querySelector('header'), footer = document.querySelector('footer');
+    mobile = Math.min(window.innerWidth, window.innerHeight) < 700 || matchMedia('(pointer: coarse)').matches;
+    document.body.classList.toggle('mobile', mobile);
+    const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    let stageW, stageH;
+    if (mobile) {
+      // near-fullscreen camera view that follows the player
+      stageW = window.innerWidth; stageH = vh - header.offsetHeight;
+      // zoom in enough to read the maze (~22 cells across) but never so far out that the map doesn't fill the screen
+      s = Math.max(stageW / mapW, stageH / mapH, Math.min(stageW, stageH) / (CELL * 22));
+    } else {
+      const availW = Math.min(window.innerWidth - 16, 1100);
+      const availH = vh - header.offsetHeight - footer.offsetHeight - 16;
+      s = Math.max(0.3, Math.min(availW / mapW, availH / mapH));
+      stageW = mapW * s; stageH = mapH * s;
+    }
+    viewW = stageW / s; viewH = stageH / s;
+    stage.style.setProperty('--w', stageW + 'px');
+    stage.style.setProperty('--h', stageH + 'px');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(mapW * s * dpr);
-    canvas.height = Math.round(mapH * s * dpr);
+    canvas.width = Math.round(stageW * dpr);
+    canvas.height = Math.round(stageH * dpr);
     S = s * dpr;
+    mapImg.style.width = (mapW * s) + 'px'; mapImg.style.height = (mapH * s) + 'px';
+    cam.x = cam.y = NaN; // snap camera on next draw
   }
   window.addEventListener('resize', layout);
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', layout);
   layout();
+  function updateCamera(dt) {
+    const tx = player ? player.x : mapW / 2, ty = player ? player.y : mapH / 2;
+    const clamp = (v, span, total) => span >= total ? (total - span) / 2 : Math.max(0, Math.min(total - span, v));
+    const gx = clamp(tx - viewW / 2, viewW, mapW), gy = clamp(ty - viewH / 2, viewH, mapH);
+    if (isNaN(cam.x)) { cam.x = gx; cam.y = gy; }
+    else { const k = Math.min(1, dt * 7); cam.x += (gx - cam.x) * k; cam.y += (gy - cam.y) * k; }
+    mapImg.style.transform = `translate(${-cam.x * s}px, ${-cam.y * s}px)`;
+  }
 
   // cell (grid) -> map units (center of cell)
   const cx = gx => gx * CELL + CELL / 2;
@@ -34,10 +63,12 @@
   // ---------- special cells ----------
   const openCells = [];
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (open(x, y)) openCells.push({x, y});
-  function nearestOpen(mx, my) { // map coords (absolute) -> nearest open cell
+  const degree = c => DIRS.filter(d => open(c.x + d.x, c.y + d.y)).length;
+  function nearestOpen(mx, my, minDegree = 0) { // map coords (absolute) -> nearest open cell
     const lx = mx - D.x0, ly = my - D.y0;
     let best = null, bd = Infinity;
     for (const c of openCells) {
+      if (degree(c) < minDegree) continue;
       const d = (cx(c.x) - lx) ** 2 + (cy(c.y) - ly) ** 2;
       if (d < bd) { bd = d; best = c; }
     }
@@ -46,7 +77,7 @@
   const bld = code => D.buildings.find(b => b.code === code);
   const hgb = bld('HGB');
   const SPAWN = hgb ? nearestOpen(hgb.x, hgb.y) : nearestOpen(D.x0 + 80, D.y1 - 80);
-  const START = nearestOpen(800, 880); // Brigham Square
+  const START = nearestOpen(800, 880, 3); // a junction in Brigham Square, so the first swipe usually works
   const corners = [
     nearestOpen(D.x0, D.y0), nearestOpen(D.x1, D.y0),
     nearestOpen(D.x0, D.y1), nearestOpen(D.x1, D.y1),
@@ -97,10 +128,12 @@
     dotsLeft = dots.size;
     resetPositions();
   }
+  let nextLife = 10000;
   function newGame() {
-    score = 0; lives = 3; level = 1;
+    score = 0; lives = 3; level = 1; nextLife = 10000;
     newLevel();
-    setState('ready', 2);
+    setState('ready', 2.2);
+    sfx('start');
     updateHud();
   }
   function setState(s, t) { state = s; stateTimer = t || 0; }
@@ -183,9 +216,10 @@
         else if (state === 'dying') { if (lives > 0) { resetPositions(); setState('ready', 1.5); } else setState('over'); overlay(true, 'GAME OVER', `Final score ${score}. The Testing Center closes at 10.`); }
         else if (state === 'levelclear') { level++; newLevel(); setState('ready', 2); updateHud(); }
       }
-      if (state !== 'play') return;
+      if (state !== 'play') { updateSiren(); return; }
     }
-    if (state !== 'play') return;
+    if (state !== 'play') { updateSiren(); return; }
+    updateSiren();
 
     // mode timers
     if (frightTimer > 0) {
@@ -211,6 +245,7 @@
         ghosts.forEach(g => { if (g.state === 'active') { g.fright = true; g.speed = 3.4; reverse(g); } });
         sfx('power');
       } else { score += 10; sfx('waka'); }
+      if (score >= nextLife) { nextLife += 10000; lives++; sfx('life'); }
       updateHud();
       if (dotsLeft === 0) { setState('levelclear', 2); sfx('level'); return; }
     }
@@ -240,9 +275,11 @@
   }
 
   // ---------- drawing ----------
+  let lastDraw = 0;
   function draw(now) {
-    ctx.setTransform(S, 0, 0, S, 0, 0);
-    ctx.clearRect(0, 0, D.x1 - D.x0, D.y1 - D.y0);
+    updateCamera(Math.min(0.1, (now - lastDraw) / 1000)); lastDraw = now;
+    ctx.setTransform(S, 0, 0, S, -cam.x * S, -cam.y * S);
+    ctx.clearRect(cam.x, cam.y, viewW, viewH);
 
     // corridors
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -345,6 +382,7 @@
     if (title) o.querySelector('h2').textContent = title;
     if (text) o.querySelector('p').textContent = text;
     if (show) $('start').textContent = state === 'over' ? 'Play again' : (state === 'paused' ? 'Resume' : 'Play');
+    if (show) sirenSet('off');
   }
   let nearCode = '';
   function updateNear() {
@@ -362,26 +400,35 @@
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (KEYS[k]) { e.preventDefault(); if (state === 'play') setWant(KEYS[k]); else if (state === 'idle') start(); }
     if (k === 'p' || k === 'Escape') togglePause();
-    if (k === 'm') audioOn = !audioOn;
+    if (k === 'm') setAudio(!audioOn);
     if (k === 'Enter' || k === ' ') { if (state === 'idle' || state === 'over' || state === 'paused') start(); }
   });
+  // swipe anywhere: the turn fires as soon as the finger has moved far enough (no need to lift)
   let touch = null;
-  stage.addEventListener('pointerdown', e => { touch = {x: e.clientX, y: e.clientY}; }, {passive: true});
-  window.addEventListener('pointerup', e => {
+  window.addEventListener('pointerdown', e => { if (e.target.closest('button')) return; touch = {x: e.clientX, y: e.clientY}; initAudio(); }, {passive: true});
+  window.addEventListener('pointermove', e => {
     if (!touch) return;
-    const dx = e.clientX - touch.x, dy = e.clientY - touch.y; touch = null;
-    if (Math.abs(dx) < 18 && Math.abs(dy) < 18) return;
+    const dx = e.clientX - touch.x, dy = e.clientY - touch.y;
+    if (Math.abs(dx) < 22 && Math.abs(dy) < 22) return;
+    touch = null;
     if (state === 'play') setWant(Math.abs(dx) > Math.abs(dy) ? {x: Math.sign(dx), y: 0} : {x: 0, y: Math.sign(dy)});
-  });
-  document.querySelectorAll('#pad button').forEach(b => b.addEventListener('pointerdown', e => {
-    e.preventDefault(); const [x, y] = b.dataset.dir.split(',').map(Number);
-    if (state === 'play') setWant({x, y});
-  }));
+  }, {passive: true});
+  window.addEventListener('pointerup', () => { touch = null; });
   $('start').addEventListener('click', start);
+  $('mute').addEventListener('click', () => setAudio(!audioOn));
+  function setAudio(on) {
+    audioOn = on; $('mute').textContent = on ? '🔊' : '🔇';
+    try { localStorage.setItem('cougarman-audio', on ? '1' : '0'); } catch (e) {}
+    if (!on) sirenSet('off');
+  }
   function start() {
     initAudio();
     if (state === 'paused') { setState('play'); overlay(false); return; }
     newGame(); overlay(false);
+    // go fullscreen on phones when supported (iOS Safari ignores this; the layout is near-fullscreen anyway)
+    if (mobile && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
   }
   function togglePause() {
     if (state === 'play') { setState('paused'); overlay(true, 'PAUSED', 'Press P or Resume to keep going.'); }
@@ -403,12 +450,49 @@
       o.connect(g).connect(AC.destination); o.start(t + at); o.stop(t + at + dur + 0.02);
     };
     switch (kind) {
-      case 'waka': if (t - lastWaka < 0.09) return; lastWaka = t; tone(lastWaka % 0.2 > 0.1 ? 420 : 300, 220, 0.07, 'square', 0.035); break;
-      case 'power': tone(200, 800, 0.35, 'sawtooth', 0.05); break;
+      case 'waka': if (t - lastWaka < 0.09) return; lastWaka = t; wakaHi = !wakaHi;
+        wakaHi ? tone(180, 420, 0.08, 'square', 0.04) : tone(420, 180, 0.08, 'square', 0.04); break;
+      case 'power': tone(200, 800, 0.35, 'sawtooth', 0.05); tone(100, 400, 0.35, 'sawtooth', 0.03); break;
       case 'ghost': tone(300, 1400, 0.3, 'square', 0.06); tone(300, 1400, 0.3, 'square', 0.04, 0.15); break;
-      case 'die': for (let i = 0; i < 6; i++) tone(500 - i * 60, 200 - i * 20, 0.18, 'triangle', 0.06, i * 0.18); break;
+      case 'die': for (let i = 0; i < 6; i++) tone(500 - i * 60, 200 - i * 20, 0.18, 'triangle', 0.06, i * 0.18);
+        tone(120, 40, 0.5, 'sawtooth', 0.05, 1.1); break;
       case 'level': [523, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.15, 'square', 0.05, i * 0.12)); break;
+      case 'start': // opening jingle
+        [392, 523, 659, 784, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.14, 'square', 0.05, i * 0.13));
+        [196, 262, 330, 392, 330, 392, 523].forEach((f, i) => tone(f, f, 0.14, 'triangle', 0.05, i * 0.13)); break;
+      case 'life': [784, 988, 1175, 1568].forEach((f, i) => tone(f, f * 1.5, 0.2, 'square', 0.05, i * 0.1)); break;
     }
+  }
+  let wakaHi = false;
+
+  // background siren: continuous oscillator whose pitch wobbles; changes character per game phase
+  let siren = null, sirenKind = 'off';
+  function sirenSet(kind) {
+    if (kind === sirenKind) return;
+    if (!AC) { sirenKind = kind === 'off' ? 'off' : sirenKind; return; }
+    const t = AC.currentTime;
+    if (kind === 'off' || !audioOn) {
+      if (siren) { siren.g.gain.setTargetAtTime(0, t, 0.05); siren.o.stop(t + 0.4); siren.lfo.stop(t + 0.4); siren = null; }
+      sirenKind = 'off'; return;
+    }
+    if (!siren) {
+      const o = AC.createOscillator(), lfo = AC.createOscillator(), depth = AC.createGain(), g = AC.createGain();
+      o.type = 'triangle'; lfo.type = 'sine';
+      lfo.connect(depth).connect(o.frequency); o.connect(g).connect(AC.destination);
+      g.gain.setValueAtTime(0, t); o.start(t); lfo.start(t);
+      siren = { o, lfo, depth, g };
+    }
+    const p = { normal: [200 + level * 15, 3.5, 45, 0.035], fright: [330, 9, 140, 0.04], eyes: [640, 16, 260, 0.035] }[kind];
+    siren.o.frequency.setTargetAtTime(p[0], t, 0.05);
+    siren.lfo.frequency.setTargetAtTime(p[1], t, 0.05);
+    siren.depth.gain.setTargetAtTime(p[2], t, 0.05);
+    siren.g.gain.setTargetAtTime(p[3], t, 0.1);
+    sirenKind = kind;
+  }
+  function updateSiren() {
+    if (state !== 'play' || !audioOn) return sirenSet('off');
+    if (ghosts.some(g => g.state === 'eaten')) return sirenSet('eyes');
+    sirenSet(frightTimer > 0 ? 'fright' : 'normal');
   }
 
   // ---------- loop ----------
@@ -423,6 +507,7 @@
   // debug hook (used for automated testing)
   window.CougarMan = { update, draw, setWant, start, get state() { return state; }, get score() { return score; },
     get player() { return player; }, get ghosts() { return ghosts; }, get dotsLeft() { return dotsLeft; }, get lives() { return lives; } };
+  try { setAudio(localStorage.getItem('cougarman-audio') !== '0'); } catch (e) {}
   updateHud();
   // show the empty maze behind the start overlay
   dots = new Set(openCells.map(c => key(c.x, c.y)));

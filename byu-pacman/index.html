@@ -34,8 +34,15 @@
     box-shadow: 0 10px 40px rgba(0,0,0,.5);
     background: #efece4;
   }
-  #stage img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  #stage img { position: absolute; left: 0; top: 0; display: block; pointer-events: none; transform-origin: 0 0; will-change: transform; max-width: none; }
   #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #near {
+    position: absolute; left: 10px; bottom: 10px; z-index: 2; pointer-events: none;
+    background: rgba(6,26,54,.75); color: #f5c842; font-weight: 600; font-size: .8rem;
+    padding: 4px 10px; border-radius: 999px; max-width: 80%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #near:empty { display: none; }
+  #mute { background: none; border: 0; font-size: 1.1rem; cursor: pointer; padding: 0 4px; line-height: 1; }
   #overlay {
     position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
     background: rgba(6, 26, 54, .78); text-align: center; padding: 24px; gap: 10px;
@@ -54,20 +61,17 @@
     padding: 8px 16px; font-size: .8rem; color: #7f93b8; gap: 12px;
   }
   footer #near { color: #f5c842; font-weight: 600; min-height: 1.2em; }
-  #pad { display: none; position: fixed; right: 16px; bottom: 16px; width: 150px; height: 150px; }
-  #pad button {
-    position: absolute; width: 48px; height: 48px; border-radius: 12px; border: 0;
-    background: rgba(245,200,66,.85); color: #061a36; font-size: 1.3rem; font-weight: 800;
-  }
-  #pad .u { left: 51px; top: 0; } #pad .d { left: 51px; bottom: 0; }
-  #pad .l { left: 0; top: 51px; } #pad .r { right: 0; top: 51px; }
-  @media (pointer: coarse) { #pad { display: block; } }
-  @media (max-width: 640px) {
-    header { flex-direction: column; gap: 4px; padding: 8px; }
-    header h1 span { display: none; }
-    .hud { font-size: .85rem; gap: 12px; }
-    footer { flex-direction: column; text-align: center; gap: 2px; }
-  }
+  /* phones / tablets: compact one-line HUD, no footer, stage fills the rest of the screen */
+  body.mobile header { padding: 6px 10px; gap: 8px; }
+  body.mobile header h1 { font-size: 1rem; }
+  body.mobile header h1 span { display: none; }
+  body.mobile .hud { font-size: .8rem; gap: 10px; white-space: nowrap; }
+  body.mobile .hud #high { display: none; }
+  body.mobile .hud #high-wrap { display: none; }
+  body.mobile footer { display: none; }
+  body.mobile #stage { border-radius: 0; box-shadow: none; }
+  body.mobile #overlay h2 { font-size: 1.7rem; }
+  body.mobile #overlay p { font-size: .9rem; }
 </style>
 </head>
 <body>
@@ -75,15 +79,17 @@
     <h1>COUGAR-MAN <span>Pac-Man on the BYU campus</span></h1>
     <div class="hud">
       <div>SCORE <b id="score">0</b></div>
-      <div>HIGH <b id="high">0</b></div>
+      <div id="high-wrap">HIGH <b id="high">0</b></div>
       <div>LEVEL <b id="level">1</b></div>
       <div id="lives"></div>
+      <button id="mute" title="Mute (M)" aria-label="Toggle sound">🔊</button>
     </div>
   </header>
 
   <div id="stage">
     <img id="map" src="map.svg" alt="BYU campus map" />
     <canvas id="game"></canvas>
+    <div id="near"></div>
     <div id="overlay">
       <h2>COUGAR-MAN</h2>
       <p>Eat every dot on the BYU walkways. The ghosts leave the Testing Center (HGB) and hunt you across campus. Grab a Creamery cone to turn the tables.</p>
@@ -93,22 +99,15 @@
         <span><i style="background:#3fd8ff"></i>Group Project</span>
         <span><i style="background:#ffa03b"></i>Finals Week</span>
       </div>
-      <p style="font-size:.85rem;margin-top:6px">Arrow keys / WASD · swipe on mobile · P to pause</p>
+      <p style="font-size:.85rem;margin-top:6px">Swipe anywhere to turn · arrow keys / WASD on desktop</p>
       <button id="start">Play</button>
     </div>
   </div>
 
   <footer>
-    <div id="near">&nbsp;</div>
     <div>Map © OpenStreetMap contributors (ODbL) · Building codes per BYU</div>
+    <div>Arrow keys / WASD · swipe on mobile · P pause · M mute</div>
   </footer>
-
-  <div id="pad">
-    <button class="u" data-dir="0,-1">▲</button>
-    <button class="l" data-dir="-1,0">◀</button>
-    <button class="r" data-dir="1,0">▶</button>
-    <button class="d" data-dir="0,1">▼</button>
-  </div>
 
   <script src="data.js"></script>
   <script src="game.js"></script>
