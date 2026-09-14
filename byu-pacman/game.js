@@ -28,7 +28,7 @@
       // the HUD floats over the stage, so the stage is the whole viewport
       stageW = window.innerWidth; stageH = vh;
       // zoom in close (~12 cells across the short axis); never so far out that the map doesn't fill the screen
-      s = Math.max(stageW / mapW, stageH / mapH, Math.min(stageW, stageH) / (CELL * 12));
+      s = Math.max(stageW / mapW, stageH / mapH, Math.min(stageW, stageH) / (CELL * 15));
     } else {
       const availW = Math.min(window.innerWidth - 16, 1100);
       const availH = vh - header.offsetHeight - footer.offsetHeight - 16;
@@ -83,7 +83,20 @@
     nearestOpen(D.x0, D.y0), nearestOpen(D.x1, D.y0),
     nearestOpen(D.x0, D.y1), nearestOpen(D.x1, D.y1),
   ];
-  const POWER = new Set(corners.map(c => key(c.x, c.y)));
+  const midX = (D.x0 + D.x1) / 2, midY = (D.y0 + D.y1) / 2;
+  const powerSpots = corners.concat([
+    nearestOpen(midX, D.y0), nearestOpen(midX, D.y1), nearestOpen(D.x0, midY), nearestOpen(D.x1, midY),
+  ]);
+  const POWER = new Set(powerSpots.map(c => key(c.x, c.y)));
+
+  // bonus pickups that appear on a random walkway cell for a while
+  const BONUS = {
+    cone:   { icon: '🍦', label: 'CREAMERY CONE +300', points: 300 },
+    tail:   { icon: '⚡', label: 'COUGAR TAIL: SPEED', points: 200, dur: 8 },
+    snow:   { icon: '❄️', label: 'SNOW DAY: GHOSTS FROZEN', points: 200, dur: 5 },
+    shield: { icon: '🛡️', label: 'HONOR CODE SHIELD', points: 200, dur: 10 },
+  };
+  let bonus = null, bonusIn = 12, fx = { tail: 0, snow: 0, shield: 0 }, fxLabel = '', fxLabelT = 0;
 
   // BFS distance field from a cell
   function bfs(sx, sy) {
@@ -122,6 +135,7 @@
       state: 'waiting', wait: g.delay, fright: false,
     }));
     mode = 'scatter'; modeTimer = 7; frightTimer = 0; ghostCombo = 0;
+    bonus = null; bonusIn = 12; fx = { tail: 0, snow: 0, shield: 0 }; fxLabelT = 0;
   }
   function newLevel() {
     dots = new Set(openCells.map(c => key(c.x, c.y)));
@@ -214,7 +228,7 @@
       stateTimer -= dt;
       if (stateTimer <= 0) {
         if (state === 'ready') setState('play');
-        else if (state === 'dying') { if (lives > 0) { resetPositions(); setState('ready', 1.5); } else setState('over'); overlay(true, 'GAME OVER', `Final score ${score}. The Testing Center closes at 10.`); }
+        else if (state === 'dying') { if (lives > 0) { resetPositions(); setState('ready', 1.5); } else { setState('over'); overlay(true, 'GAME OVER', `Final score ${score}. The Testing Center closes at 10.`); } }
         else if (state === 'levelclear') { level++; newLevel(); setState('ready', 2); updateHud(); }
       }
       if (state !== 'play') { updateSiren(); return; }
@@ -234,6 +248,23 @@
         ghosts.forEach(g => g.state === 'active' && reverse(g));
       }
     }
+
+    // bonus pickups + timed effects
+    for (const k in fx) if (fx[k] > 0) fx[k] -= dt;
+    if (fxLabelT > 0) fxLabelT -= dt;
+    if (bonus) { bonus.ttl -= dt; if (bonus.ttl <= 0) bonus = null; }
+    else { bonusIn -= dt; if (bonusIn <= 0) {
+      const types = Object.keys(BONUS);
+      let c; do { c = openCells[Math.floor(Math.random() * openCells.length)]; } while (Math.abs(c.x - player.to.x) + Math.abs(c.y - player.to.y) < 6);
+      bonus = { x: c.x, y: c.y, type: types[Math.floor(Math.random() * types.length)], ttl: 10 };
+      bonusIn = 10 + Math.random() * 8;
+    } }
+    if (bonus && player.to.x === bonus.x && player.to.y === bonus.y && player.t > 0.5) {
+      const b = BONUS[bonus.type];
+      score += b.points; if (b.dur) fx[bonus.type] = b.dur;
+      fxLabel = b.icon + ' ' + b.label; fxLabelT = 2.5; bonus = null; sfx('bonus'); updateHud();
+    }
+    player.speed = (6.2 + level * 0.25) * (fx.tail > 0 ? 1.5 : 1);
 
     // player
     advance(player, dt, playerChoose);
@@ -255,6 +286,7 @@
     playerDist = bfs(player.to.x, player.to.y);
     for (const g of ghosts) {
       if (g.state === 'waiting') { g.wait -= dt; if (g.wait <= 0) g.state = 'active'; else continue; }
+      if (fx.snow > 0 && g.state !== 'eaten') continue; // frozen
       advance(g, dt, c => ghostChoose(g, c));
       if (g.state === 'eaten' && g.t >= 1 && g.to.x === SPAWN.x && g.to.y === SPAWN.y) {
         g.state = 'active'; g.fright = false; g.speed = 5.4 + level * 0.3;
@@ -266,6 +298,9 @@
         if (g.fright) {
           g.state = 'eaten'; g.fright = false; g.speed = 11;
           score += 200 * (2 ** ghostCombo); ghostCombo++; updateHud(); sfx('ghost');
+        } else if (fx.shield > 0) {
+          // shield absorbs the hit: ghost is sent back to the Testing Center
+          fx.shield = 0; g.state = 'eaten'; g.speed = 11; fxLabel = '🛡️ SHIELD USED'; fxLabelT = 2; sfx('ghost');
         } else {
           lives--; updateHud(); sfx('die'); setState('dying', 1.6);
           return;
@@ -304,6 +339,14 @@
       }
     }
 
+    if (bonus) {
+      const b = BONUS[bonus.type], bob = Math.sin(now / 200) * CELL * 0.1;
+      ctx.font = `${CELL * 1.3}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.globalAlpha = bonus.ttl < 2 ? (Math.floor(now / 150) % 2 ? 0.3 : 1) : 1;
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(cx(bonus.x), cy(bonus.y) + bob, CELL * 0.85, 0, 7); ctx.fill();
+      ctx.fillText(b.icon, cx(bonus.x), cy(bonus.y) + bob + CELL * 0.05);
+      ctx.globalAlpha = 1; ctx.textBaseline = 'alphabetic';
+    }
     if (!player) return;
     // ghosts
     for (const g of ghosts) {
@@ -327,6 +370,17 @@
       ctx.fillStyle = '#062'; ctx.beginPath(); ctx.arc(ex, ey, r * 0.16, 0, 7); ctx.fill();
     }
 
+    // active effect / pickup label (top-left of the view, below the HUD)
+    if (state === 'play') {
+      const active = Object.keys(fx).filter(k => fx[k] > 0).map(k => `${BONUS[k].icon} ${Math.ceil(fx[k])}s`);
+      const txt = fxLabelT > 0 ? fxLabel : active.join('   ');
+      if (txt) {
+        ctx.font = `800 ${CELL * 0.9}px sans-serif`; ctx.textAlign = 'left';
+        ctx.fillStyle = '#f5c842'; ctx.strokeStyle = '#061a36'; ctx.lineWidth = 2.5; ctx.lineJoin = 'round';
+        const tx = cam.x + CELL * 0.8, ty = cam.y + (mobile ? CELL * 3.6 : CELL * 1.4);
+        ctx.strokeText(txt, tx, ty); ctx.fillText(txt, tx, ty);
+      }
+    }
     // ready text
     if (state === 'ready') {
       ctx.font = `900 ${CELL * 1.8}px sans-serif`; ctx.textAlign = 'center';
@@ -339,6 +393,7 @@
     const eyes = g.state === 'eaten';
     if (!eyes) {
       let col = g.def.color;
+      if (fx.snow > 0) col = '#9fd8ff';
       if (g.fright) col = (frightTimer < 2 && Math.floor(now / 200) % 2) ? '#ffffff' : '#2438ff';
       ctx.fillStyle = col;
       ctx.beginPath();
@@ -461,6 +516,7 @@
       case 'start': // opening jingle
         [392, 523, 659, 784, 659, 784, 1047].forEach((f, i) => tone(f, f, 0.14, 'square', 0.05, i * 0.13));
         [196, 262, 330, 392, 330, 392, 523].forEach((f, i) => tone(f, f, 0.14, 'triangle', 0.05, i * 0.13)); break;
+      case 'bonus': [660, 880, 1320].forEach((f, i) => tone(f, f, 0.12, 'square', 0.05, i * 0.08)); break;
       case 'life': [784, 988, 1175, 1568].forEach((f, i) => tone(f, f * 1.5, 0.2, 'square', 0.05, i * 0.1)); break;
     }
   }
@@ -507,7 +563,8 @@
   }
   // debug hook (used for automated testing)
   window.CougarMan = { update, draw, setWant, start, get state() { return state; }, get score() { return score; },
-    get player() { return player; }, get ghosts() { return ghosts; }, get dotsLeft() { return dotsLeft; }, get lives() { return lives; } };
+    get player() { return player; }, get ghosts() { return ghosts; }, get dotsLeft() { return dotsLeft; }, get lives() { return lives; },
+    get bonus() { return bonus; }, get fx() { return fx; }, placeBonus(type) { bonus = { x: player.to.x, y: player.to.y, type, ttl: 10 }; } };
   try { setAudio(localStorage.getItem('cougarman-audio') !== '0'); } catch (e) {}
   updateHud();
   // show the empty maze behind the start overlay
