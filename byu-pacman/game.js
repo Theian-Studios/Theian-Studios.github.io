@@ -25,9 +25,10 @@
     let stageW, stageH;
     if (mobile) {
       // near-fullscreen camera view that follows the player
-      stageW = window.innerWidth; stageH = vh - header.offsetHeight;
-      // zoom in enough to read the maze (~22 cells across) but never so far out that the map doesn't fill the screen
-      s = Math.max(stageW / mapW, stageH / mapH, Math.min(stageW, stageH) / (CELL * 22));
+      // the HUD floats over the stage, so the stage is the whole viewport
+      stageW = window.innerWidth; stageH = vh;
+      // zoom in close (~12 cells across the short axis); never so far out that the map doesn't fill the screen
+      s = Math.max(stageW / mapW, stageH / mapH, Math.min(stageW, stageH) / (CELL * 12));
     } else {
       const availW = Math.min(window.innerWidth - 16, 1100);
       const availH = vh - header.offsetHeight - footer.offsetHeight - 16;
